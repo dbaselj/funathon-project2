@@ -440,9 +440,14 @@ ttc = torchTextClassifiers(
 
 ## Question 2 — Prepare training
 
-Define a `TrainingConfig` and train on a small subsample so it completes quickly. __Use only 1 epoch for fast training__. A model trained on the full dataset for many epochs is loaded from MLflow in the next step. Have a careful look at the hyperparameters. Do you understand what they do?
+Define a `TrainingConfig` and train on a small subsample so it completes quickly. __Use only 1 epoch for fast training__. A model trained on the full dataset for many epochs is loaded from MLflow in the next step. Have a careful look at the hyperparameters. Do you understand what they do? You can see the `TrainingConfig` documentation [here](https://inseefrlab.github.io/torchTextClassifiers/api/configs.html#trainingconfig).
 
-You can see the `TrainingConfig` documentation [here](https://inseefrlab.github.io/torchTextClassifiers/api/configs.html#trainingconfig).
+
+::: {.callout-note appearance="simple" collapse="true"}
+## Play with hyperparameters
+Of course, you can play with hyperparameters if you want: add more epochs, change the learning rate and the batch size... Remember that you are training the model using CPUs, so avoid big models that will take a lot of time to train.
+:::
+
 
 <details>
 <summary>Clue here</summary>
