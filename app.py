@@ -27,6 +27,8 @@ RAG_GEN_MODEL_NAME = "gemma4-26b-moe"
 RAG_GEN_MODEL_OPTIONS = ["gemma4-26b-moe", "qwen3-6-35b-moe"]
 RAG_TEMPERATURE = 0.1
 DEFAULT_TOP_K = 5
+RAG_CACHE_SIZE = 256
+RAG_CONTEXT_MAX_CHARS = 700
 
 SYSTEM_PROMPT = """\
 You are an expert classifier for the NACE 2.1 nomenclature.
@@ -352,6 +354,13 @@ def load_rag_clients() -> tuple[OpenAI, QdrantClient]:
     return llm, qdrant
 
 
+
+
+def _compact_retrieved_text(text: str, max_chars: int = RAG_CONTEXT_MAX_CHARS) -> str:
+    # Keep title/includes context but avoid overly long prompts that slow LLM generation.
+    t = " ".join(str(text).split())
+    return t[:max_chars]
+
 def predict_supervised(text: str, top_k: int, code_labels: dict[str, str]) -> tuple[dict, list[dict]]:
     model, _run_id = load_supervised_model()
     results = model.predict(np.array([text]), top_k=top_k)
@@ -374,7 +383,8 @@ def predict_supervised(text: str, top_k: int, code_labels: dict[str, str]) -> tu
     return decision, rows
 
 
-def predict_rag(text: str, top_k: int, code_labels: dict[str, str], rag_model: str) -> tuple[dict, list[dict]]:
+@lru_cache(maxsize=RAG_CACHE_SIZE)
+def _predict_rag_cached(text: str, top_k: int, rag_model: str) -> tuple[dict, list[dict]]:
     client_llm, client_qdrant = load_rag_clients()
 
     emb = client_llm.embeddings.create(model=RAG_EMB_MODEL_NAME, input=text).data[0].embedding
@@ -386,14 +396,13 @@ def predict_rag(text: str, top_k: int, code_labels: dict[str, str], rag_model: s
 
     retrieved = points.model_dump()["points"]
     codes_retrieved = [p["payload"]["code"] for p in retrieved]
-    desc_retrieved = [p["payload"]["text"] for p in retrieved]
+    desc_retrieved = [_compact_retrieved_text(p["payload"]["text"]) for p in retrieved]
 
     user_prompt = USER_PROMPT_TEMPLATE.format(
         activity=text,
         proposed_nace_descriptions="## " + "\n\n## ".join(desc_retrieved),
         proposed_nace_codes=", ".join(codes_retrieved),
     )
-
     response = client_llm.chat.completions.parse(
         model=rag_model,
         messages=[
@@ -408,27 +417,58 @@ def predict_rag(text: str, top_k: int, code_labels: dict[str, str], rag_model: s
     chosen = parsed.nace_code
     decision = {
         "code": chosen,
-        "label": code_labels.get(chosen, "Not codable") if chosen else "Not codable",
+        "label": chosen or "Not codable",
         "codable": bool(parsed.codable and chosen),
         "confidence": f"{float(parsed.confidence):.3f}",
     }
 
     rows: list[dict] = []
-    rank = 1
+    # Keep final decision in list when codable, as requested.
+    if chosen:
+        rows.append(
+            {
+                "rank": 1,
+                "code": chosen,
+                "label": chosen,
+                "confidence": f"{float(parsed.confidence):.3f}",
+            }
+        )
+
+    rank = 2 if chosen else 1
     for p in retrieved:
         code = p["payload"]["code"]
+        if chosen and code == chosen:
+            continue
         rows.append(
             {
                 "rank": rank,
                 "code": code,
-                "label": code_labels.get(code, "(label not found)"),
+                "label": code,
                 "confidence": f"{float(p.get('score', 0.0)):.3f}",
             }
         )
         rank += 1
         if len(rows) >= top_k:
             break
+
     return decision, rows
+
+
+def predict_rag(text: str, top_k: int, code_labels: dict[str, str], rag_model: str) -> tuple[dict, list[dict]]:
+    decision, rows = _predict_rag_cached(text.strip(), top_k, rag_model)
+    decision = {
+        **decision,
+        "label": code_labels.get(decision["code"], "Not codable") if decision["code"] else "Not codable",
+    }
+    mapped_rows = [
+        {
+            **r,
+            "label": code_labels.get(r["code"], "(label not found)"),
+        }
+        for r in rows
+    ]
+    return decision, mapped_rows
+
 
 
 @app.route("/", methods=["GET", "POST"])
