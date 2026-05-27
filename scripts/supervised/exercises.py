@@ -80,7 +80,7 @@ def main() -> None:
     mlflow.set_experiment(EXPERIMENT_NAME)
     mlflow.pytorch.autolog()
     training_config = TrainingConfig(
-        num_epochs=1, batch_size=128, lr=5e-4, patience_early_stopping=5
+        num_epochs=16, batch_size=128, lr=5e-4, patience_early_stopping=5
     )
 
     with mlflow.start_run() as run:
