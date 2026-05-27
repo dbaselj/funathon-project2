@@ -373,12 +373,12 @@ def predict_supervised(text: str, top_k: int, code_labels: dict[str, str]) -> tu
     }
     rows = [
         {
-            "rank": i,
+            "rank": i + 1,
             "code": codes[i],
             "label": code_labels.get(codes[i], "(label not found)"),
             "confidence": f"{float(confs[i]):.3f}",
         }
-        for i in range(1, top_k)
+        for i in range(top_k)
     ]
     return decision, rows
 
@@ -415,26 +415,32 @@ def _predict_rag_cached(text: str, top_k: int, rag_model: str) -> tuple[dict, li
     parsed: NaceClassificationResult = response.choices[0].message.parsed
 
     chosen = parsed.nace_code
+    decision_conf = float(parsed.confidence)
+
+    # Fallback: if LLM returns null, use top retrieved candidate for consistent behavior.
+    if not chosen and retrieved:
+        chosen = retrieved[0]["payload"]["code"]
+        decision_conf = float(retrieved[0].get("score", 0.0))
+
     decision = {
         "code": chosen,
         "label": chosen or "Not codable",
-        "codable": bool(parsed.codable and chosen),
-        "confidence": f"{float(parsed.confidence):.3f}",
+        "codable": bool(chosen),
+        "confidence": f"{decision_conf:.3f}",
     }
 
     rows: list[dict] = []
-    # Keep final decision in list when codable, as requested.
     if chosen:
         rows.append(
             {
                 "rank": 1,
                 "code": chosen,
                 "label": chosen,
-                "confidence": f"{float(parsed.confidence):.3f}",
+                "confidence": f"{decision_conf:.3f}",
             }
         )
 
-    rank = 2 if chosen else 1
+    rank = 2
     for p in retrieved:
         code = p["payload"]["code"]
         if chosen and code == chosen:
