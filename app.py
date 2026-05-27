@@ -151,6 +151,7 @@ HTML = """
                 <option value="rag" {% if mode == 'rag' %}selected{% endif %}>RAG</option>
                 <option value="supervised" {% if mode == 'supervised' %}selected{% endif %}>Supervised</option>
               </select>
+              {% if mode == 'rag' %}
               <span id="rag-model-wrap">
                 <label for="rag_model">RAG Model</label>
                 <select id="rag_model" name="rag_model">
@@ -159,6 +160,7 @@ HTML = """
                   {% endfor %}
                 </select>
               </span>
+              {% endif %}
               <input id="top_k" name="top_k" type="hidden" value="{{ top_k }}" />
               <button id="predict-btn" type="submit"><span class="btn-text">Classify</span><span class="btn-loader" aria-hidden="true"></span></button>
             </div>
