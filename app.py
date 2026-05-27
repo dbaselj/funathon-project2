@@ -1,19 +1,67 @@
 import os
 from functools import lru_cache
+from typing import Optional
 
 import mlflow
 import numpy as np
 import polars as pl
+import duckdb
 from dotenv import load_dotenv
 from flask import Flask, render_template_string, request
+from openai import OpenAI
+from pydantic import BaseModel, Field
+from qdrant_client import QdrantClient
 from torchTextClassifiers import torchTextClassifiers
 
 load_dotenv(override=True)
 
-APP_TITLE = "Very NACE"
-EXPERIMENT_NAME = "funathon-project2"
+APP_TITLE = "Very NACE 2.1"
+EXPERIMENT_NAME = "funathon-2026-project2"
 DEFAULT_RUN_ID = "3fe714a946c149b589305ec153fdc36f"
 DATA_URL = "https://minio.lab.sspcloud.fr/projet-formation/diffusion/funathon/2026/project2/generation_None_temp08.parquet"
+NACE_TSV_URL = "https://minio.lab.sspcloud.fr/projet-formation/diffusion/funathon/2026/project2/NACE_Rev2.1_Structure_Explanatory_Notes_EN.tsv"
+
+RAG_COLLECTION_NAME = "nace-collection"
+RAG_EMB_MODEL_NAME = "qwen3-embedding-8b"
+RAG_GEN_MODEL_NAME = "gemma4-26b-moe"
+RAG_GEN_MODEL_OPTIONS = ["gemma4-26b-moe", "qwen3-6-35b-moe"]
+RAG_TEMPERATURE = 0.1
+DEFAULT_TOP_K = 5
+RAG_CACHE_SIZE = 256
+RAG_CONTEXT_MAX_CHARS = 700
+
+SYSTEM_PROMPT = """\
+You are an expert classifier for the NACE 2.1 nomenclature.
+Given a company activity description and candidate NACE codes, pick the single most appropriate code from the candidates.
+Always reply with a valid JSON object matching the requested schema. No explanations, no extra text.
+"""
+
+USER_PROMPT_TEMPLATE = """\
+## Activity to classify
+{activity}
+
+## Candidate NACE codes and their explanatory notes
+{proposed_nace_descriptions}
+
+## Rules
+- Pick exactly one code from this list: [{proposed_nace_codes}]. Do not invent codes outside the list.
+- If several activities are mentioned, only consider the first one.
+- If the description is too vague to decide, return `nace_code: null` and `codable: false`.
+
+## Output — valid JSON only
+{{
+  "nace_code": "<one code from the candidate list, or null>",
+  "codable": <true | false>,
+  "confidence": <float between 0.0 and 1.0>
+}}
+"""
+
+
+class NaceClassificationResult(BaseModel):
+    nace_code: Optional[str] = Field(description="Chosen NACE code from the candidate list, or null")
+    codable: bool = Field(description="False if the description is too vague to code")
+    confidence: float = Field(ge=0.0, le=1.0, description="Confidence score between 0 and 1")
+
 
 HTML = """
 <!doctype html>
@@ -40,10 +88,12 @@ HTML = """
       .grid { display:grid; gap:1rem; margin-top:1rem; }
       .card { background:var(--card); border:1px solid var(--line); border-radius:18px; padding:1rem; backdrop-filter:blur(5px); box-shadow:0 10px 26px rgba(0,0,0,.4); }
       label { font-size:.9rem; font-weight:700; color:var(--ink-dim); }
-      textarea, input[type="number"] { border:1px solid var(--line); border-radius:12px; background:rgba(2,12,8,.7); color:#eafff4; }
+      textarea, input[type="number"], select { border:1px solid var(--line); border-radius:12px; background:rgba(2,12,8,.7); color:#eafff4; }
       textarea { width:100%; min-height:132px; margin-top:.45rem; padding:.88rem .95rem; font:inherit; resize:vertical; }
       .controls { margin-top:.9rem; display:flex; gap:.7rem; align-items:center; flex-wrap:wrap; }
-      input[type="number"] { width:90px; padding:.5rem .55rem; font:inherit; }
+      input[type="number"], select { padding:.5rem .55rem; font:inherit; }
+      input[type="number"] { width:90px; }
+      select { min-width:150px; }
       #predict-btn { border:1px solid rgba(78,247,249,.5); border-radius:12px; padding:.64rem 1rem; font-weight:700; color:#001108; background:linear-gradient(120deg,var(--accent),var(--accent-2)); cursor:pointer; min-width:190px; transition:transform .18s ease, box-shadow .22s ease; }
       #predict-btn:active { transform:translateY(1px) scale(0.99); }
       .btn-loader { display:none; width:16px; height:16px; border:2px solid rgba(0,17,8,.35); border-top-color:#001108; border-radius:50%; margin-left:8px; vertical-align:middle; animation:spin .85s linear infinite; }
@@ -66,6 +116,11 @@ HTML = """
       .matrix-row.show { animation:rowIn .42s cubic-bezier(.2,.8,.2,1) forwards; }
       .matrix-char { display:inline-block; min-width:5ch; }
       .error { margin-top:.9rem; border-radius:12px; padding:.8rem; border:1px solid #d05a5a; background:rgba(57,15,15,.55); color:#ffc3c3; }
+      .mode-tag { font-size:.8rem; color:#8cdcb8; margin-left:.4rem; }
+      .decision { margin:.2rem 0 .9rem; padding:.75rem .85rem; border:1px solid var(--line); border-radius:12px; }
+      .decision.ok { background:rgba(33,245,143,.10); }
+      .decision.warn { background:rgba(208,90,90,.16); border-color:#d05a5a; }
+      .decision strong { font-family:"IBM Plex Mono",monospace; }
       @keyframes spin { to { transform:rotate(360deg);} }
       @keyframes pulseGlow { 0%{box-shadow:0 0 0 0 rgba(33,245,143,.45);}70%{box-shadow:0 0 0 16px rgba(33,245,143,0);}100%{box-shadow:0 0 0 0 rgba(33,245,143,0);} }
       @keyframes riseIn { from{opacity:0; transform:translateY(10px) scale(.994);} to{opacity:1; transform:translateY(0) scale(1);} }
@@ -85,7 +140,7 @@ HTML = """
     <div class="shell">
       <section class="hero">
         <h1 class="glitch" data-text="{{ title }}">{{ title }}</h1>
-        <p>MLflow run: {{ run_id }}</p>
+        <p>Automatic NACE Coding</p>
       </section>
       <section class="grid">
         <div class="card">
@@ -93,16 +148,48 @@ HTML = """
             <label for="text">Business Activity Text</label>
             <textarea id="text" name="text" placeholder="e.g. Urban taxi passenger transport service">{{ text }}</textarea>
             <div class="controls">
-              <label for="top_k">Top K</label>
-              <input id="top_k" name="top_k" type="number" min="1" max="10" value="{{ top_k }}" />
-              <button id="predict-btn" type="submit"><span class="btn-text">Run Prediction</span><span class="btn-loader" aria-hidden="true"></span></button>
+              <label for="mode">Engine</label>
+              <select id="mode" name="mode">
+                <option value="rag" {% if mode == 'rag' %}selected{% endif %}>RAG</option>
+                <option value="supervised" {% if mode == 'supervised' %}selected{% endif %}>Supervised</option>
+              </select>
+              {% if mode == 'rag' %}
+              <span id="rag-model-wrap">
+                <label for="rag_model">RAG Model</label>
+                <select id="rag_model" name="rag_model">
+                  {% for m in rag_model_options %}
+                    <option value="{{ m }}" {% if m == rag_model %}selected{% endif %}>{{ m }}</option>
+                  {% endfor %}
+                </select>
+              </span>
+              {% endif %}
+              <input id="top_k" name="top_k" type="hidden" value="{{ top_k }}" />
+              <button id="predict-btn" type="submit"><span class="btn-text">Classify</span><span class="btn-loader" aria-hidden="true"></span></button>
             </div>
+
           </form>
           {% if error %}<div class="error"><strong>Error:</strong> {{ error }}</div>{% endif %}
         </div>
         {% if predictions %}
           <div class="card results-card">
-            <h2 class="glitch" data-text="Predictions">Predictions</h2>
+            <h2 class="glitch" data-text="Predictions">Predictions <span class="mode-tag">{{ mode|upper }}</span></h2>
+
+            {% if mode == 'rag' and rag_decision %}
+              <div class="decision {% if rag_decision.codable %}ok{% else %}warn{% endif %}">
+                <div><strong>Final Decision:</strong> {{ rag_decision.code if rag_decision.code else 'Not codable' }}</div>
+                <div>{{ rag_decision.label }}</div>
+                <div>Confidence: {{ rag_decision.confidence }}</div>
+              </div>
+              <h3 class="mode-tag" style="margin:0 0 .35rem 0; font-size:.9rem;">Alternatives</h3>
+            {% elif mode == 'supervised' and sup_decision %}
+              <div class="decision ok">
+                <div><strong>Final Decision:</strong> {{ sup_decision.code }}</div>
+                <div>{{ sup_decision.label }}</div>
+                <div>Confidence: {{ sup_decision.confidence }}</div>
+              </div>
+              <h3 class="mode-tag" style="margin:0 0 .35rem 0; font-size:.9rem;">Alternatives</h3>
+            {% endif %}
+
             <table>
               <thead><tr><th>Rank</th><th>NACE Code</th><th>Label</th><th>Confidence</th></tr></thead>
               <tbody>
@@ -122,7 +209,30 @@ HTML = """
     </div>
     <script>
       const form = document.getElementById("predict-form");
+      const textEl = document.getElementById("text");
+      const modeEl = document.getElementById("mode");
+      const ragModelEl = document.getElementById("rag_model");
+      const ragWrapEl = document.getElementById("rag-model-wrap");
       if (form) form.addEventListener("submit", () => document.body.classList.add("predicting"));
+
+      let predictTimer = null;
+      function schedulePredict() {
+        if (!form || !textEl) return;
+        const txt = (textEl.value || "").trim();
+        if (txt.length < 3) return;
+        clearTimeout(predictTimer);
+        predictTimer = setTimeout(() => form.requestSubmit(), 550);
+      }
+      if (textEl) textEl.addEventListener("input", schedulePredict);
+      function syncModeUI() {
+        if (!modeEl || !ragWrapEl) return;
+        ragWrapEl.style.display = modeEl.value === "rag" ? "inline-flex" : "none";
+        ragWrapEl.style.gap = "0.45rem";
+        ragWrapEl.style.alignItems = "center";
+      }
+      syncModeUI();
+      if (modeEl) modeEl.addEventListener("change", () => { syncModeUI(); form.requestSubmit(); });
+      if (ragModelEl) ragModelEl.addEventListener("change", () => form.requestSubmit());
 
       const canvas = document.getElementById("matrix");
       const ctx = canvas.getContext("2d");
@@ -158,7 +268,6 @@ HTML = """
           const c = parseFloat(chip.dataset.confidence || "0");
           chip.style.setProperty("--w", Math.max(4, Math.min(100, c*100)) + "%");
         });
-
         document.querySelectorAll('.matrix-char').forEach((el, idx) => {
           const target = el.dataset.target || el.textContent;
           let frame = 0;
@@ -182,7 +291,6 @@ HTML = """
       resizeMatrix();
       drawMatrix();
       matrixReveal();
-
       setInterval(()=>{
         const g=document.querySelectorAll(".glitch");
         g.forEach(el=>el.style.transform=`translate(${(Math.random()-.5)*0.8}px,${(Math.random()-.5)*0.8}px)`);
@@ -193,6 +301,22 @@ HTML = """
 """
 
 app = Flask(__name__)
+
+
+@lru_cache(maxsize=1)
+def load_code_labels() -> dict[str, str]:
+    # Use official NACE table so hierarchical codes (e.g., 77.1, 49.1) resolve.
+    con = duckdb.connect(database=":memory:")
+    con.execute("INSTALL httpfs;")
+    con.execute("LOAD httpfs;")
+    rows = con.execute(
+        f"SELECT CODE, HEADING FROM read_csv('{NACE_TSV_URL}')"
+    ).fetchall()
+    return {
+        str(code).strip(): str(heading).strip()
+        for code, heading in rows
+        if code and heading
+    }
 
 
 def _latest_run_id() -> str:
@@ -210,65 +334,199 @@ def _latest_run_id() -> str:
 
 
 @lru_cache(maxsize=1)
-def load_model() -> tuple[torchTextClassifiers, str]:
+def load_supervised_model() -> tuple[torchTextClassifiers, str]:
     run_id = os.getenv("MODEL_RUN_ID", "").strip() or _latest_run_id()
-    local_dir = mlflow.artifacts.download_artifacts(
-        artifact_uri=f"runs:/{run_id}/model_artifacts"
-    )
+    local_dir = mlflow.artifacts.download_artifacts(artifact_uri=f"runs:/{run_id}/model_artifacts")
     model = torchTextClassifiers.load(local_dir)
     model.pytorch_model.eval()
     return model, run_id
 
 
 @lru_cache(maxsize=1)
-def load_code_labels() -> dict[str, str]:
-    df = pl.read_parquet(DATA_URL).select(["code", "name"]).unique("code")
-    return {row[0]: row[1] for row in df.iter_rows()}
+def load_rag_clients() -> tuple[OpenAI, QdrantClient]:
+    llm = OpenAI(base_url=os.environ["LLMLAB_URL"], api_key=os.environ["LLMLAB_API_KEY"])
+    qdrant = QdrantClient(
+        url=os.environ["QDRANT_URL"],
+        api_key=os.environ["QDRANT_API_KEY"],
+        port=os.environ["QDRANT_API_PORT"],
+        check_compatibility=False,
+    )
+    return llm, qdrant
+
+
+
+
+def _compact_retrieved_text(text: str, max_chars: int = RAG_CONTEXT_MAX_CHARS) -> str:
+    # Keep title/includes context but avoid overly long prompts that slow LLM generation.
+    t = " ".join(str(text).split())
+    return t[:max_chars]
+
+def predict_supervised(text: str, top_k: int, code_labels: dict[str, str]) -> tuple[dict, list[dict]]:
+    model, _run_id = load_supervised_model()
+    results = model.predict(np.array([text]), top_k=top_k)
+    codes = results["prediction"][0]
+    confs = results["confidence"][0]
+    decision = {
+        "code": codes[0],
+        "label": code_labels.get(codes[0], "(label not found)"),
+        "confidence": f"{float(confs[0]):.3f}",
+    }
+    rows = [
+        {
+            "rank": i + 1,
+            "code": codes[i],
+            "label": code_labels.get(codes[i], "(label not found)"),
+            "confidence": f"{float(confs[i]):.3f}",
+        }
+        for i in range(top_k)
+    ]
+    return decision, rows
+
+
+@lru_cache(maxsize=RAG_CACHE_SIZE)
+def _predict_rag_cached(text: str, top_k: int, rag_model: str) -> tuple[dict, list[dict]]:
+    client_llm, client_qdrant = load_rag_clients()
+
+    emb = client_llm.embeddings.create(model=RAG_EMB_MODEL_NAME, input=text).data[0].embedding
+    points = client_qdrant.query_points(
+        collection_name=RAG_COLLECTION_NAME,
+        query=emb,
+        limit=top_k,
+    )
+
+    retrieved = points.model_dump()["points"]
+    codes_retrieved = [p["payload"]["code"] for p in retrieved]
+    desc_retrieved = [_compact_retrieved_text(p["payload"]["text"]) for p in retrieved]
+
+    user_prompt = USER_PROMPT_TEMPLATE.format(
+        activity=text,
+        proposed_nace_descriptions="## " + "\n\n## ".join(desc_retrieved),
+        proposed_nace_codes=", ".join(codes_retrieved),
+    )
+    response = client_llm.chat.completions.parse(
+        model=rag_model,
+        messages=[
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": user_prompt},
+        ],
+        temperature=RAG_TEMPERATURE,
+        response_format=NaceClassificationResult,
+    )
+    parsed: NaceClassificationResult = response.choices[0].message.parsed
+
+    chosen = parsed.nace_code
+    decision_conf = float(parsed.confidence)
+
+    # Fallback: if LLM returns null, use top retrieved candidate for consistent behavior.
+    if not chosen and retrieved:
+        chosen = retrieved[0]["payload"]["code"]
+        decision_conf = float(retrieved[0].get("score", 0.0))
+
+    decision = {
+        "code": chosen,
+        "label": chosen or "Not codable",
+        "codable": bool(chosen),
+        "confidence": f"{decision_conf:.3f}",
+    }
+
+    rows: list[dict] = []
+    if chosen:
+        rows.append(
+            {
+                "rank": 1,
+                "code": chosen,
+                "label": chosen,
+                "confidence": f"{decision_conf:.3f}",
+            }
+        )
+
+    rank = 2
+    for p in retrieved:
+        code = p["payload"]["code"]
+        if chosen and code == chosen:
+            continue
+        rows.append(
+            {
+                "rank": rank,
+                "code": code,
+                "label": code,
+                "confidence": f"{float(p.get('score', 0.0)):.3f}",
+            }
+        )
+        rank += 1
+        if len(rows) >= top_k:
+            break
+
+    return decision, rows
+
+
+def predict_rag(text: str, top_k: int, code_labels: dict[str, str], rag_model: str) -> tuple[dict, list[dict]]:
+    decision, rows = _predict_rag_cached(text.strip(), top_k, rag_model)
+    decision = {
+        **decision,
+        "label": code_labels.get(decision["code"], "Not codable") if decision["code"] else "Not codable",
+    }
+    mapped_rows = [
+        {
+            **r,
+            "label": code_labels.get(r["code"], "(label not found)"),
+        }
+        for r in rows
+    ]
+    return decision, mapped_rows
+
 
 
 @app.route("/", methods=["GET", "POST"])
 def home():
     text = ""
-    predictions = []
+    predictions: list[dict] = []
+    rag_decision = None
+    sup_decision = None
     error = ""
-    top_k = 5
+    top_k = DEFAULT_TOP_K
+    mode = "rag"
+    rag_model = RAG_GEN_MODEL_NAME
 
     try:
-        model, run_id = load_model()
         code_labels = load_code_labels()
+        # Preload supervised model to fail fast on startup issues.
+        load_supervised_model()
     except Exception as exc:
         return render_template_string(
             HTML,
             title=APP_TITLE,
-            run_id="(failed to load)",
             text=text,
             top_k=top_k,
+            mode=mode,
             predictions=predictions,
+            rag_decision=rag_decision,
+            sup_decision=sup_decision,
+            rag_model=rag_model,
+            rag_model_options=RAG_GEN_MODEL_OPTIONS,
             error=str(exc),
         )
 
     if request.method == "POST":
         text = (request.form.get("text") or "").strip()
+        mode = (request.form.get("mode") or "rag").strip().lower()
+        if mode not in {"supervised", "rag"}:
+            mode = "rag"
+        rag_model = (request.form.get("rag_model") or RAG_GEN_MODEL_NAME).strip()
+        if rag_model not in RAG_GEN_MODEL_OPTIONS:
+            rag_model = RAG_GEN_MODEL_NAME
         try:
-            top_k = int(request.form.get("top_k") or 5)
+            top_k = int(request.form.get("top_k") or DEFAULT_TOP_K)
         except ValueError:
-            top_k = 5
+            top_k = DEFAULT_TOP_K
         top_k = max(1, min(10, top_k))
 
         if text:
             try:
-                results = model.predict(np.array([text]), top_k=top_k)
-                codes = results["prediction"][0]
-                confs = results["confidence"][0]
-                predictions = [
-                    {
-                        "rank": i + 1,
-                        "code": codes[i],
-                        "label": code_labels.get(codes[i], "(label not found)"),
-                        "confidence": f"{float(confs[i]):.3f}",
-                    }
-                    for i in range(top_k)
-                ]
+                if mode == "rag":
+                    rag_decision, predictions = predict_rag(text, top_k, code_labels, rag_model)
+                else:
+                    sup_decision, predictions = predict_supervised(text, top_k, code_labels)
             except Exception as exc:
                 error = str(exc)
         else:
@@ -277,10 +535,14 @@ def home():
     return render_template_string(
         HTML,
         title=APP_TITLE,
-        run_id=run_id,
         text=text,
         top_k=top_k,
+        mode=mode,
         predictions=predictions,
+        rag_decision=rag_decision,
+        sup_decision=sup_decision,
+        rag_model=rag_model,
+        rag_model_options=RAG_GEN_MODEL_OPTIONS,
         error=error,
     )
 
