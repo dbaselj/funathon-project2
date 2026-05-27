@@ -1,8 +1,5 @@
-import json
 import os
-import re
 from functools import lru_cache
-from typing import Optional
 
 import duckdb
 import mlflow
@@ -10,7 +7,6 @@ import numpy as np
 from dotenv import load_dotenv
 from flask import Flask, render_template_string, request
 from openai import OpenAI
-from pydantic import BaseModel, Field
 from qdrant_client import QdrantClient
 from torchTextClassifiers import torchTextClassifiers
 
@@ -23,45 +19,9 @@ NACE_TSV_URL = "https://minio.lab.sspcloud.fr/projet-formation/diffusion/funatho
 
 RAG_COLLECTION_NAME = "nace-collection"
 RAG_EMB_MODEL_NAME = "qwen3-embedding-8b"
-RAG_GEN_MODEL_NAME = "gemma4-26b-moe"
-RAG_GEN_MODEL_OPTIONS = ["gemma4-26b-moe", "qwen3-6-35b-moe"]
-RAG_TEMPERATURE = 0.1
 DEFAULT_TOP_K = 5
 RAG_CACHE_SIZE = 256
-RAG_CONTEXT_MAX_CHARS = 700
 REQUIRED_RAG_ENV = ("LLMLAB_URL", "LLMLAB_API_KEY", "QDRANT_URL", "QDRANT_API_KEY")
-
-SYSTEM_PROMPT = """\
-You are an expert classifier for the NACE 2.1 nomenclature.
-Given a company activity description and candidate NACE codes, pick the single most appropriate code from the candidates.
-Always reply with a valid JSON object matching the requested schema. No explanations, no extra text.
-"""
-
-USER_PROMPT_TEMPLATE = """\
-## Activity to classify
-{activity}
-
-## Candidate NACE codes and their explanatory notes
-{proposed_nace_descriptions}
-
-## Rules
-- Pick exactly one code from this list: [{proposed_nace_codes}]. Do not invent codes outside the list.
-- If several activities are mentioned, only consider the first one.
-- If the description is too vague to decide, return `nace_code: null` and `codable: false`.
-
-## Output — valid JSON only
-{{
-  "nace_code": "<one code from the candidate list, or null>",
-  "codable": <true | false>,
-  "confidence": <float between 0.0 and 1.0>
-}}
-"""
-
-
-class NaceClassificationResult(BaseModel):
-    nace_code: Optional[str] = Field(description="Chosen NACE code from the candidate list, or null")
-    codable: bool = Field(description="False if the description is too vague to code")
-    confidence: float = Field(ge=0.0, le=1.0, description="Confidence score between 0 and 1")
 
 
 HTML = """
@@ -157,16 +117,6 @@ HTML = """
                 <option value="rag" {% if mode == 'rag' %}selected{% endif %}>RAG</option>
                 <option value="supervised" {% if mode == 'supervised' %}selected{% endif %}>Supervised</option>
               </select>
-              {% if mode == 'rag' %}
-              <span id="rag-model-wrap">
-                <label for="rag_model">RAG Model</label>
-                <select id="rag_model" name="rag_model">
-                  {% for m in rag_model_options %}
-                    <option value="{{ m }}" {% if m == rag_model %}selected{% endif %}>{{ m }}</option>
-                  {% endfor %}
-                </select>
-              </span>
-              {% endif %}
               <input id="top_k" name="top_k" type="hidden" value="{{ top_k }}" />
               <button id="predict-btn" type="submit"><span class="btn-text">Classify</span><span class="btn-loader" aria-hidden="true"></span></button>
             </div>
@@ -219,8 +169,6 @@ HTML = """
       const form = document.getElementById("predict-form");
       const textEl = document.getElementById("text");
       const modeEl = document.getElementById("mode");
-      const ragModelEl = document.getElementById("rag_model");
-      const ragWrapEl = document.getElementById("rag-model-wrap");
       if (form) form.addEventListener("submit", () => document.body.classList.add("classifying"));
 
       let predictTimer = null;
@@ -232,15 +180,7 @@ HTML = """
         predictTimer = setTimeout(() => form.requestSubmit(), 550);
       }
       if (textEl) textEl.addEventListener("input", schedulePredict);
-      function syncModeUI() {
-        if (!modeEl || !ragWrapEl) return;
-        ragWrapEl.style.display = modeEl.value === "rag" ? "inline-flex" : "none";
-        ragWrapEl.style.gap = "0.45rem";
-        ragWrapEl.style.alignItems = "center";
-      }
-      syncModeUI();
-      if (modeEl && form) modeEl.addEventListener("change", () => { syncModeUI(); form.requestSubmit(); });
-      if (ragModelEl && form) ragModelEl.addEventListener("change", () => form.requestSubmit());
+      if (modeEl && form) modeEl.addEventListener("change", () => form.requestSubmit());
 
       const canvas = document.getElementById("matrix");
       const ctx = canvas.getContext("2d");
@@ -404,11 +344,6 @@ def load_rag_clients() -> tuple[OpenAI, QdrantClient]:
     return llm, qdrant
 
 
-def _compact_retrieved_text(text: str, max_chars: int = RAG_CONTEXT_MAX_CHARS) -> str:
-    # Keep title/includes context but avoid overly long prompts that slow LLM generation.
-    t = " ".join(str(text).split())
-    return t[:max_chars]
-
 def predict_supervised(text: str, top_k: int, code_labels: dict[str, str]) -> tuple[dict, list[dict]]:
     model, _run_id = load_supervised_model()
     results = model.predict(np.array([text]), top_k=top_k)
@@ -435,18 +370,8 @@ def predict_supervised(text: str, top_k: int, code_labels: dict[str, str]) -> tu
     return decision, rows
 
 
-def _parse_rag_response(msg) -> NaceClassificationResult:
-    if msg.parsed is not None:
-        return msg.parsed
-    content = re.sub(r"<think>.*?</think>", "", msg.content or "", flags=re.DOTALL).strip()
-    match = re.search(r"\{.*\}", content, re.DOTALL)
-    if not match:
-        raise RuntimeError(f"LLM returned no parseable JSON: {content[:200]!r}")
-    return NaceClassificationResult.model_validate(json.loads(match.group()))
-
-
 @lru_cache(maxsize=RAG_CACHE_SIZE)
-def _predict_rag_cached(text: str, top_k: int, rag_model: str) -> tuple[dict, list[dict]]:
+def _predict_rag_cached(text: str, top_k: int) -> tuple[dict, list[dict]]:
     client_llm, client_qdrant = load_rag_clients()
 
     emb = client_llm.embeddings.create(model=RAG_EMB_MODEL_NAME, input=text).data[0].embedding
@@ -458,85 +383,28 @@ def _predict_rag_cached(text: str, top_k: int, rag_model: str) -> tuple[dict, li
 
     retrieved = points.model_dump()["points"]
     if not retrieved:
-        return (
-            {
-                "code": None,
-                "label": "Not codable",
-                "codable": False,
-                "confidence": "0.000",
-            },
-            [],
-        )
+        return {"code": None, "label": "Not codable", "confidence": "0.000"}, []
 
-    codes_retrieved = [p["payload"]["code"] for p in retrieved]
-    desc_retrieved = [_compact_retrieved_text(p["payload"]["text"]) for p in retrieved]
-
-    user_prompt = USER_PROMPT_TEMPLATE.format(
-        activity=text,
-        proposed_nace_descriptions="## " + "\n\n## ".join(desc_retrieved),
-        proposed_nace_codes=", ".join(codes_retrieved),
-    )
-    response = client_llm.chat.completions.parse(
-        model=rag_model,
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": user_prompt},
-        ],
-        temperature=RAG_TEMPERATURE,
-        response_format=NaceClassificationResult,
-    )
-    parsed: NaceClassificationResult = _parse_rag_response(response.choices[0].message)
-
-    chosen = parsed.nace_code.strip() if parsed.nace_code else None
-    decision_conf = float(parsed.confidence)
-
-    if not parsed.codable:
-        chosen = None
-    elif chosen not in codes_retrieved:
-        # The prompt forbids invented codes; fall back to the closest retrieved code.
-        chosen = codes_retrieved[0]
-        decision_conf = float(retrieved[0].get("score", 0.0))
-
+    rows = [
+        {
+            "rank": i + 1,
+            "code": p["payload"]["code"],
+            "label": p["payload"]["code"],
+            "confidence": f"{float(p.get('score', 0.0)):.3f}",
+        }
+        for i, p in enumerate(retrieved)
+    ]
+    top = retrieved[0]
     decision = {
-        "code": chosen,
-        "label": chosen or "Not codable",
-        "codable": bool(chosen),
-        "confidence": f"{decision_conf:.3f}",
+        "code": top["payload"]["code"],
+        "label": top["payload"]["code"],
+        "confidence": f"{float(top.get('score', 0.0)):.3f}",
     }
-
-    rows: list[dict] = []
-    if chosen:
-        rows.append(
-            {
-                "rank": 1,
-                "code": chosen,
-                "label": chosen,
-                "confidence": f"{decision_conf:.3f}",
-            }
-        )
-
-    rank = 2 if chosen else 1
-    for p in retrieved:
-        code = p["payload"]["code"]
-        if chosen and code == chosen:
-            continue
-        rows.append(
-            {
-                "rank": rank,
-                "code": code,
-                "label": code,
-                "confidence": f"{float(p.get('score', 0.0)):.3f}",
-            }
-        )
-        rank += 1
-        if len(rows) >= top_k:
-            break
-
     return decision, rows
 
 
-def predict_rag(text: str, top_k: int, code_labels: dict[str, str], rag_model: str) -> tuple[dict, list[dict]]:
-    decision, rows = _predict_rag_cached(text.strip(), top_k, rag_model)
+def predict_rag(text: str, top_k: int, code_labels: dict[str, str]) -> tuple[dict, list[dict]]:
+    decision, rows = _predict_rag_cached(text.strip(), top_k)
     decision = {
         **decision,
         "label": code_labels.get(decision["code"], "(label not found)")
@@ -563,16 +431,12 @@ def home():
     error = ""
     top_k = DEFAULT_TOP_K
     mode = "rag"
-    rag_model = RAG_GEN_MODEL_NAME
 
     if request.method == "POST":
         text = (request.form.get("text") or "").strip()
         mode = (request.form.get("mode") or "rag").strip().lower()
         if mode not in {"supervised", "rag"}:
             mode = "rag"
-        rag_model = (request.form.get("rag_model") or RAG_GEN_MODEL_NAME).strip()
-        if rag_model not in RAG_GEN_MODEL_OPTIONS:
-            rag_model = RAG_GEN_MODEL_NAME
         try:
             top_k = int(request.form.get("top_k") or DEFAULT_TOP_K)
         except ValueError:
@@ -588,7 +452,7 @@ def home():
 
             try:
                 if mode == "rag":
-                    rag_decision, predictions = predict_rag(text, top_k, code_labels, rag_model)
+                    rag_decision, predictions = predict_rag(text, top_k, code_labels)
                 else:
                     sup_decision, predictions = predict_supervised(text, top_k, code_labels)
             except Exception as exc:
@@ -605,8 +469,6 @@ def home():
         predictions=predictions,
         rag_decision=rag_decision,
         sup_decision=sup_decision,
-        rag_model=rag_model,
-        rag_model_options=RAG_GEN_MODEL_OPTIONS,
         error=error,
     )
 
