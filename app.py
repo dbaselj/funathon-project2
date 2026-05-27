@@ -1,4 +1,6 @@
+import json
 import os
+import re
 from functools import lru_cache
 from typing import Optional
 
@@ -433,6 +435,16 @@ def predict_supervised(text: str, top_k: int, code_labels: dict[str, str]) -> tu
     return decision, rows
 
 
+def _parse_rag_response(msg) -> NaceClassificationResult:
+    if msg.parsed is not None:
+        return msg.parsed
+    content = re.sub(r"<think>.*?</think>", "", msg.content or "", flags=re.DOTALL).strip()
+    match = re.search(r"\{.*\}", content, re.DOTALL)
+    if not match:
+        raise RuntimeError(f"LLM returned no parseable JSON: {content[:200]!r}")
+    return NaceClassificationResult.model_validate(json.loads(match.group()))
+
+
 @lru_cache(maxsize=RAG_CACHE_SIZE)
 def _predict_rag_cached(text: str, top_k: int, rag_model: str) -> tuple[dict, list[dict]]:
     client_llm, client_qdrant = load_rag_clients()
@@ -473,7 +485,7 @@ def _predict_rag_cached(text: str, top_k: int, rag_model: str) -> tuple[dict, li
         temperature=RAG_TEMPERATURE,
         response_format=NaceClassificationResult,
     )
-    parsed: NaceClassificationResult = response.choices[0].message.parsed
+    parsed: NaceClassificationResult = _parse_rag_response(response.choices[0].message)
 
     chosen = parsed.nace_code.strip() if parsed.nace_code else None
     decision_conf = float(parsed.confidence)
