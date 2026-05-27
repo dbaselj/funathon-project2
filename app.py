@@ -12,7 +12,7 @@ load_dotenv(override=True)
 
 APP_TITLE = "NACE Classifier"
 EXPERIMENT_NAME = "funathon-2026-project2"
-DEFAULT_RUN_ID = "bda5a0a0e8494cf1ba2820d11140fd6a"
+DEFAULT_RUN_ID = "3fe714a946c149b589305ec153fdc36f"
 DATA_URL = "https://minio.lab.sspcloud.fr/projet-formation/diffusion/funathon/2026/project2/generation_None_temp08.parquet"
 
 HTML = """
