@@ -133,7 +133,7 @@ HTML = """
             <h2 class="glitch" data-text="Predictions">Predictions <span class="mode-tag">{{ mode|upper }}</span></h2>
 
             {% if mode == 'rag' and rag_decision %}
-              <div class="decision {% if rag_decision.codable %}ok{% else %}warn{% endif %}">
+              <div class="decision ok">
                 <div><strong>Final Decision:</strong> {{ rag_decision.code if rag_decision.code else 'Not codable' }}</div>
                 <div>{{ rag_decision.label }}</div>
                 <div>Confidence: {{ rag_decision.confidence }}</div>
