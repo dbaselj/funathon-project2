@@ -78,8 +78,8 @@ HTML = """
       .scanlines { position:fixed; inset:0; background:repeating-linear-gradient(to bottom, rgba(255,255,255,0.03) 0px, rgba(255,255,255,0.03) 1px, transparent 2px, transparent 4px); z-index:1; pointer-events:none; animation: scanDrift 8s linear infinite; }
       .crt-flicker{position:fixed;inset:0;pointer-events:none;z-index:1;background:radial-gradient(circle at 50% 0%,rgba(120,255,200,.04),transparent 45%);mix-blend-mode:screen;animation:flicker 0.18s steps(2,end) infinite;}
       .decode-overlay{position:fixed;inset:0;display:none;z-index:3;pointer-events:none;background:linear-gradient(180deg,rgba(2,10,7,.18),rgba(2,10,7,.45));}
-      body.predicting .decode-overlay{display:block;}
-      .decode-overlay::before{content:"DECRYPTING NACE SIGNAL";position:absolute;left:50%;top:10%;transform:translateX(-50%);font:700 14px "IBM Plex Mono",monospace;color:#79ffd1;letter-spacing:.2em;text-shadow:0 0 8px #53ffb6;animation:blink 1s steps(2,end) infinite;}
+      body.classifying .decode-overlay{display:block;}
+      .decode-overlay::before{content:"CLASSIFYING ACTIVITY";position:absolute;left:50%;top:10%;transform:translateX(-50%);font:700 14px "IBM Plex Mono",monospace;color:#79ffd1;letter-spacing:.2em;text-shadow:0 0 8px #53ffb6;animation:blink 1s steps(2,end) infinite;}
       .shell { position:relative; z-index:2; max-width:1080px; margin:0 auto; padding:2rem 1rem; }
       .hero { background:linear-gradient(135deg, rgba(7,37,26,0.9), rgba(6,26,41,0.88)); border:1px solid var(--line); border-radius:20px; padding:1.2rem 1.35rem; box-shadow:0 16px 34px rgba(0,0,0,0.46); }
       .hero h1 { margin:0; font-size:clamp(1.55rem,4vw,2.3rem); text-shadow:0 0 10px rgba(33,245,143,0.35); }
@@ -96,11 +96,14 @@ HTML = """
       #predict-btn { border:1px solid rgba(78,247,249,.5); border-radius:12px; padding:.64rem 1rem; font-weight:700; color:#001108; background:linear-gradient(120deg,var(--accent),var(--accent-2)); cursor:pointer; min-width:190px; transition:transform .18s ease, box-shadow .22s ease; }
       #predict-btn:active { transform:translateY(1px) scale(0.99); }
       .btn-loader { display:none; width:16px; height:16px; border:2px solid rgba(0,17,8,.35); border-top-color:#001108; border-radius:50%; margin-left:8px; vertical-align:middle; animation:spin .85s linear infinite; }
-      body.predicting #predict-btn { animation:pulseGlow .9s ease-in-out infinite; }
-      body.predicting .btn-text::after { content:"..."; }
-      body.predicting .btn-loader { display:inline-block; }
+      body.classifying #predict-btn { animation:pulseGlow .9s ease-in-out infinite; }
+      body.classifying .btn-text::after { content:"..."; }
+      body.classifying .btn-loader { display:inline-block; }
+      .loading-status { display:none; margin-top:.85rem; color:#9fffd0; font:500 .82rem "IBM Plex Mono",monospace; letter-spacing:.02em; }
+      body.classifying .loading-status { display:block; }
+      .loading-track { position:relative; height:9px; margin-top:.45rem; border:1px solid rgba(78,247,249,.35); border-radius:999px; background:rgba(2,12,8,.75); overflow:hidden; }
+      .loading-bar { position:absolute; inset:0 auto 0 0; width:42%; border-radius:inherit; background:linear-gradient(90deg,var(--accent),var(--accent-2)); box-shadow:0 0 14px rgba(33,245,143,.45); animation:loadingSlide 1.05s ease-in-out infinite; }
       .results-card { position:relative; animation:riseIn .43s cubic-bezier(.2,.8,.2,1) both; }
-      .results-card::before { content:""; position:absolute; left:10px; right:10px; top:0; height:2px; background:linear-gradient(90deg,transparent,#53ffb6,#67ffff,transparent); filter:drop-shadow(0 0 6px #53ffb6); animation:sweep 2.2s linear infinite; }
       .glitch { position:relative; display:inline-block; }
       .glitch::before,.glitch::after { content:attr(data-text); position:absolute; left:0; top:0; width:100%; pointer-events:none; }
       .glitch::before { color:#7effdf; transform:translate(-1px,0); opacity:.35; }
@@ -123,7 +126,7 @@ HTML = """
       @keyframes spin { to { transform:rotate(360deg);} }
       @keyframes pulseGlow { 0%{box-shadow:0 0 0 0 rgba(33,245,143,.45);}70%{box-shadow:0 0 0 16px rgba(33,245,143,0);}100%{box-shadow:0 0 0 0 rgba(33,245,143,0);} }
       @keyframes riseIn { from{opacity:0; transform:translateY(10px) scale(.994);} to{opacity:1; transform:translateY(0) scale(1);} }
-      @keyframes sweep { 0%{transform:translateX(-100%);}100%{transform:translateX(100%);} }
+      @keyframes loadingSlide { 0%{transform:translateX(-110%);}50%{transform:translateX(90%);}100%{transform:translateX(240%);} }
       @keyframes rowIn { from{opacity:0; transform:translateY(8px) scale(.98); filter:blur(2px);} to{opacity:1; transform:translateY(0) scale(1); filter:blur(0);} }
       @keyframes barGrow{from{width:0}to{width:var(--w,0%)}}
       @keyframes scanDrift{0%{transform:translateY(0)}100%{transform:translateY(12px)}}
@@ -164,6 +167,10 @@ HTML = """
               {% endif %}
               <input id="top_k" name="top_k" type="hidden" value="{{ top_k }}" />
               <button id="predict-btn" type="submit"><span class="btn-text">Classify</span><span class="btn-loader" aria-hidden="true"></span></button>
+            </div>
+            <div class="loading-status" role="status" aria-live="polite">
+              Classifying activity...
+              <div class="loading-track" aria-hidden="true"><div class="loading-bar"></div></div>
             </div>
 
           </form>
@@ -212,7 +219,7 @@ HTML = """
       const modeEl = document.getElementById("mode");
       const ragModelEl = document.getElementById("rag_model");
       const ragWrapEl = document.getElementById("rag-model-wrap");
-      if (form) form.addEventListener("submit", () => document.body.classList.add("predicting"));
+      if (form) form.addEventListener("submit", () => document.body.classList.add("classifying"));
 
       let predictTimer = null;
       function schedulePredict() {
@@ -258,8 +265,6 @@ HTML = """
         requestAnimationFrame(drawMatrix);
       }
       function matrixReveal() {
-        document.body.classList.add("predicting");
-        setTimeout(()=>document.body.classList.remove("predicting"), 1300);
         const rows = document.querySelectorAll('.matrix-row');
         rows.forEach((row, i) => setTimeout(() => row.classList.add('show'), i * 120));
         const glyphs = "01NACE$#*+~";
