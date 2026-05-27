@@ -167,15 +167,6 @@ HTML = """
       const modeEl = document.getElementById("mode");
       if (form) form.addEventListener("submit", () => document.body.classList.add("classifying"));
 
-      let predictTimer = null;
-      function schedulePredict() {
-        if (!form || !textEl) return;
-        clearTimeout(predictTimer);
-        const txt = (textEl.value || "").trim();
-        if (txt.length < 3) return;
-        predictTimer = setTimeout(() => form.requestSubmit(), 550);
-      }
-      if (textEl) textEl.addEventListener("input", schedulePredict);
       if (modeEl && form) modeEl.addEventListener("change", () => form.requestSubmit());
 
       const canvas = document.getElementById("matrix");
