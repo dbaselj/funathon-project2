@@ -133,25 +133,26 @@ HTML = """
 
             {% if mode == 'rag' and rag_decision %}
               <div class="decision ok">
-                <div style="font-size:1.35rem; font-weight:700; margin-bottom:.25rem;">{{ rag_decision.label }}</div>
-                <div style="font-size:.82rem; color:var(--ink-dim);">{{ rag_decision.code if rag_decision.code else 'Not codable' }} &nbsp;·&nbsp; Confidence: {{ rag_decision.confidence }}</div>
+                <div style="font-size:1.25rem; font-weight:700; margin-bottom:.2rem;">{{ rag_decision.code }}: {{ rag_decision.label }}</div>
+                <div style="font-size:.82rem; color:var(--ink-dim);">Confidence: {{ rag_decision.confidence }}</div>
               </div>
               <h3 class="mode-tag" style="margin:0 0 .35rem 0; font-size:.9rem;">Alternatives</h3>
             {% elif mode == 'supervised' and sup_decision %}
               <div class="decision ok">
-                <div style="font-size:1.35rem; font-weight:700; margin-bottom:.25rem;">{{ sup_decision.label }}</div>
-                <div style="font-size:.82rem; color:var(--ink-dim);">{{ sup_decision.code }} &nbsp;·&nbsp; Confidence: {{ sup_decision.confidence }}</div>
+                <div style="font-size:1.25rem; font-weight:700; margin-bottom:.2rem;">{{ sup_decision.code }}: {{ sup_decision.label }}</div>
+                <div style="font-size:.82rem; color:var(--ink-dim);">Confidence: {{ sup_decision.confidence }}</div>
               </div>
               <h3 class="mode-tag" style="margin:0 0 .35rem 0; font-size:.9rem;">Alternatives</h3>
             {% endif %}
 
             <table>
-              <thead><tr><th>Rank</th><th>Label</th><th>Confidence</th></tr></thead>
+              <thead><tr><th>Rank</th><th>NACE Code</th><th>Label</th><th>Confidence</th></tr></thead>
               <tbody>
                 {% for row in predictions %}
                   <tr class="matrix-row">
                     <td>{{ row.rank }}</td>
-                    <td><span class="code" style="margin-right:.45rem;">{{ row.code }}</span>{{ row.label }}</td>
+                    <td class="code"><span class="matrix-char" data-target="{{ row.code }}">{{ row.code }}</span></td>
+                    <td>{{ row.label }}</td>
                     <td><span class="chip" data-confidence="{{ row.confidence }}"><span class="matrix-char" data-target="{{ row.confidence }}">{{ row.confidence }}</span></span></td>
                   </tr>
                 {% endfor %}
