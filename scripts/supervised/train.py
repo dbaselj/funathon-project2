@@ -1,9 +1,10 @@
-"""Improved training for NACE classification.
+"""Supervised training for NACE classification.
 
-Upgrades vs baseline:
-- Stratified train/val/test split
-- Class imbalance handling via upsampling
-- Richer evaluation: accuracy, macro-F1, top-3 accuracy
+Stratified split, minority upsampling, 12 epochs.
+Logs accuracy, macro-F1, and top-3 accuracy to MLflow.
+
+Run with:
+    uv run train.py
 """
 
 import mlflow
@@ -24,12 +25,9 @@ EXPERIMENT_NAME = "funathon-2026-project2"
 def stratified_split(df: pl.DataFrame):
     labels = df["code"].to_numpy()
     idx = np.arange(len(df))
-    train_idx, tmp_idx = train_test_split(
-        idx, test_size=0.30, random_state=42, stratify=labels
-    )
-    tmp_labels = labels[tmp_idx]
+    train_idx, tmp_idx = train_test_split(idx, test_size=0.30, random_state=42, stratify=labels)
     val_idx, test_idx = train_test_split(
-        tmp_idx, test_size=0.50, random_state=42, stratify=tmp_labels
+        tmp_idx, test_size=0.50, random_state=42, stratify=labels[tmp_idx]
     )
     return df[train_idx], df[val_idx], df[test_idx]
 
@@ -39,16 +37,13 @@ def upsample_minority(train_df: pl.DataFrame) -> pl.DataFrame:
     max_count = int(counts_df["len"].max())
     parts = []
     for row in counts_df.iter_rows(named=True):
-        code = row["code"]
+        cls_rows = train_df.filter(pl.col("code") == row["code"])
         count = int(row["len"])
-        cls_rows = train_df.filter(pl.col("code") == code)
         if count < max_count:
             extra_idx = np.random.choice(count, size=max_count - count, replace=True)
-            extra = cls_rows[extra_idx]
-            cls_rows = pl.concat([cls_rows, extra], how="vertical")
+            cls_rows = pl.concat([cls_rows, cls_rows[extra_idx]], how="vertical")
         parts.append(cls_rows)
-    upsampled = pl.concat(parts, how="vertical")
-    return upsampled.sample(fraction=1.0, shuffle=True, seed=42)
+    return pl.concat(parts, how="vertical").sample(fraction=1.0, shuffle=True, seed=42)
 
 
 def main() -> None:
@@ -82,13 +77,11 @@ def main() -> None:
         num_epochs=12, batch_size=128, lr=3e-4, patience_early_stopping=3
     )
 
-    with mlflow.start_run(run_name="improved-stratified-balanced") as run:
+    with mlflow.start_run(run_name="train-stratified-balanced") as run:
         ttc.train(
-            X_train,
-            y_train,
+            X_train, y_train,
             training_config=training_config,
-            X_val=X_val,
-            y_val=y_val,
+            X_val=X_val, y_val=y_val,
             verbose=True,
         )
         mlflow.log_artifacts(training_config.save_path, artifact_path="model_artifacts")
@@ -108,10 +101,7 @@ def main() -> None:
         print("test_accuracy:", f"{acc:.4f}")
         print("test_macro_f1:", f"{macro_f1:.4f}")
         print("test_top3_accuracy:", f"{top3:.4f}")
-        print(
-            "run_url:",
-            f"{mlflow.get_tracking_uri().rstrip('/')}/#/experiments/1/runs/{run.info.run_id}",
-        )
+        print("run_url:", f"{mlflow.get_tracking_uri().rstrip('/')}/#/experiments/1/runs/{run.info.run_id}")
 
 
 if __name__ == "__main__":
