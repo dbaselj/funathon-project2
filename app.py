@@ -41,7 +41,6 @@ HTML = """
       .crt-flicker{position:fixed;inset:0;pointer-events:none;z-index:1;background:radial-gradient(circle at 50% 0%,rgba(120,255,200,.04),transparent 45%);mix-blend-mode:screen;animation:flicker 0.18s steps(2,end) infinite;}
       .decode-overlay{position:fixed;inset:0;display:none;z-index:3;pointer-events:none;background:linear-gradient(180deg,rgba(2,10,7,.18),rgba(2,10,7,.45));}
       body.classifying .decode-overlay{display:block;}
-      .decode-overlay::before{content:"CLASSIFYING ACTIVITY";position:absolute;left:50%;top:10%;transform:translateX(-50%);font:700 14px "IBM Plex Mono",monospace;color:#79ffd1;letter-spacing:.2em;text-shadow:0 0 8px #53ffb6;animation:blink 1s steps(2,end) infinite;}
       .shell { position:relative; z-index:2; max-width:1080px; margin:0 auto; padding:2rem 1rem; }
       .hero { background:linear-gradient(135deg, rgba(7,37,26,0.9), rgba(6,26,41,0.88)); border:1px solid var(--line); border-radius:20px; padding:1.2rem 1.35rem; box-shadow:0 16px 34px rgba(0,0,0,0.46); }
       .hero h1 { margin:0; font-size:clamp(1.55rem,4vw,2.3rem); text-shadow:0 0 10px rgba(33,245,143,0.35); }
