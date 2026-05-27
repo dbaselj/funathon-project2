@@ -146,13 +146,12 @@ HTML = """
             {% endif %}
 
             <table>
-              <thead><tr><th>Rank</th><th>NACE Code</th><th>Label</th><th>Confidence</th></tr></thead>
+              <thead><tr><th>Rank</th><th>Label</th><th>Confidence</th></tr></thead>
               <tbody>
                 {% for row in predictions %}
                   <tr class="matrix-row">
                     <td>{{ row.rank }}</td>
-                    <td class="code"><span class="matrix-char" data-target="{{ row.code }}">{{ row.code }}</span></td>
-                    <td>{{ row.label }}</td>
+                    <td><span class="code" style="margin-right:.45rem;">{{ row.code }}</span>{{ row.label }}</td>
                     <td><span class="chip" data-confidence="{{ row.confidence }}"><span class="matrix-char" data-target="{{ row.confidence }}">{{ row.confidence }}</span></span></td>
                   </tr>
                 {% endfor %}
