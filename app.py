@@ -164,7 +164,7 @@ HTML = """
               <input id="top_k" name="top_k" type="hidden" value="{{ top_k }}" />
               <button id="predict-btn" type="submit"><span class="btn-text">Classify</span><span class="btn-loader" aria-hidden="true"></span></button>
             </div>
-            <div class="mode-tag" style="margin-top:.55rem;">Supervised: model scores from training data. RAG: retrieve NACE context + LLM decision. Live classify: type and pause to predict automatically.</div>
+
           </form>
           {% if error %}<div class="error"><strong>Error:</strong> {{ error }}</div>{% endif %}
         </div>
