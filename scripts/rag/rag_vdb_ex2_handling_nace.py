@@ -8,6 +8,14 @@ import duckdb
 PATH_NACE = "https://minio.lab.sspcloud.fr/projet-formation/diffusion/funathon/2026/project2/NACE_Rev2.1_Structure_Explanatory_Notes_EN.tsv"
 
 
+def _load_httpfs(con: duckdb.DuckDBPyConnection) -> None:
+    try:
+        con.execute("LOAD httpfs;")
+    except duckdb.Error:
+        con.execute("INSTALL httpfs;")
+        con.execute("LOAD httpfs;")
+
+
 def _clean(value) -> Optional[str]:
     """Normalize to stripped single-line string, or None if empty/missing."""
     if value is None:
@@ -87,10 +95,19 @@ class NaceDocument:
 
 def main() -> None:
     con = duckdb.connect(database=":memory:")
-    con.execute("INSTALL httpfs;")
-    con.execute("LOAD httpfs;")
+    _load_httpfs(con)
 
-    table = con.execute(f"SELECT * FROM read_csv('{PATH_NACE}')").to_arrow_table()
+    table = con.execute(
+        f"""
+        SELECT *
+        FROM read_csv(
+            '{PATH_NACE}',
+            delim='\t',
+            header=true,
+            all_varchar=true
+        )
+        """
+    ).to_arrow_table()
     nace = table.to_pylist()
 
     print("Loaded rows:", len(nace))

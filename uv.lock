@@ -856,7 +856,6 @@ requires-dist = [
     { name = "duckdb", specifier = ">=1.5.0" },
     { name = "ipywidgets", specifier = ">=8.1.8" },
     { name = "jupyter-cache", specifier = ">=1.0.1" },
-    { name = "matplotlib", specifier = ">=3.10.8" },
     { name = "matplotlib", specifier = ">=3.10.9" },
     { name = "mlflow", specifier = ">=2.0" },
     { name = "more-itertools", specifier = ">=11.0.2" },

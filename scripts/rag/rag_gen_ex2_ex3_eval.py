@@ -25,6 +25,14 @@ TEMPERATURE = 0.1
 # Evaluation
 SAMPLE_SIZE = 100
 
+
+def _load_httpfs(con: duckdb.DuckDBPyConnection) -> None:
+    try:
+        con.execute("LOAD httpfs;")
+    except duckdb.Error:
+        con.execute("INSTALL httpfs;")
+        con.execute("LOAD httpfs;")
+
 SYSTEM_PROMPT = """\
 You are an expert classifier for the NACE 2.1 nomenclature (Statistical Classification of Economic Activities in the European Community).
 Given a company activity description and a short list of candidate NACE codes, your job is to pick the single most appropriate code from the candidates — or to declare the activity not codable if the description is too ambiguous.
@@ -50,6 +58,28 @@ USER_PROMPT_TEMPLATE = """\
   "confidence": <float between 0.0 and 1.0>
 }}
 """
+
+
+def _optional_env_int(name: str) -> int | None:
+    value = os.getenv(name, "").strip()
+    if not value:
+        return None
+    try:
+        return int(value)
+    except ValueError as exc:
+        raise RuntimeError(f"Environment variable {name} must be an integer") from exc
+
+
+def _qdrant_client_from_env() -> QdrantClient:
+    kwargs = {
+        "url": os.environ["QDRANT_URL"],
+        "api_key": os.environ["QDRANT_API_KEY"],
+        "check_compatibility": False,
+    }
+    port = _optional_env_int("QDRANT_API_PORT")
+    if port is not None:
+        kwargs["port"] = port
+    return QdrantClient(**kwargs)
 
 
 class NaceClassificationResult(BaseModel):
@@ -106,16 +136,10 @@ def main() -> None:
         base_url=os.environ["LLMLAB_URL"],
         api_key=os.environ["LLMLAB_API_KEY"],
     )
-    client_qdrant = QdrantClient(
-        url=os.environ["QDRANT_URL"],
-        api_key=os.environ["QDRANT_API_KEY"],
-        port=os.environ["QDRANT_API_PORT"],
-        check_compatibility=False,
-    )
+    client_qdrant = _qdrant_client_from_env()
 
     con = duckdb.connect(database=":memory:")
-    con.execute("INSTALL httpfs;")
-    con.execute("LOAD httpfs;")
+    _load_httpfs(con)
 
     query_definition = f"""
     SELECT *

@@ -49,6 +49,28 @@ USER_PROMPT_TEMPLATE = """\
 """
 
 
+def _optional_env_int(name: str) -> int | None:
+    value = os.getenv(name, "").strip()
+    if not value:
+        return None
+    try:
+        return int(value)
+    except ValueError as exc:
+        raise RuntimeError(f"Environment variable {name} must be an integer") from exc
+
+
+def _qdrant_client_from_env() -> QdrantClient:
+    kwargs = {
+        "url": os.environ["QDRANT_URL"],
+        "api_key": os.environ["QDRANT_API_KEY"],
+        "check_compatibility": False,
+    }
+    port = _optional_env_int("QDRANT_API_PORT")
+    if port is not None:
+        kwargs["port"] = port
+    return QdrantClient(**kwargs)
+
+
 class NaceClassificationResult(BaseModel):
     nace_code: Optional[str] = Field(
         description="Chosen NACE code from the candidate list, or null"
@@ -66,12 +88,7 @@ def main() -> None:
         base_url=os.environ["LLMLAB_URL"],
         api_key=os.environ["LLMLAB_API_KEY"],
     )
-    client_qdrant = QdrantClient(
-        url=os.environ["QDRANT_URL"],
-        api_key=os.environ["QDRANT_API_KEY"],
-        port=os.environ["QDRANT_API_PORT"],
-        check_compatibility=False,
-    )
+    client_qdrant = _qdrant_client_from_env()
 
     activity = "Installation, maintenance and repair of residential air conditioning systems for private customers"
     print("Activity:", activity)

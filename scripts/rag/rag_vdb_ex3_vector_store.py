@@ -22,6 +22,36 @@ BATCH_SIZE = 16
 NACE_NAMESPACE = uuid5(NAMESPACE_DNS, "nace-rev2")
 
 
+def _load_httpfs(con: duckdb.DuckDBPyConnection) -> None:
+    try:
+        con.execute("LOAD httpfs;")
+    except duckdb.Error:
+        con.execute("INSTALL httpfs;")
+        con.execute("LOAD httpfs;")
+
+
+def _optional_env_int(name: str) -> int | None:
+    value = os.getenv(name, "").strip()
+    if not value:
+        return None
+    try:
+        return int(value)
+    except ValueError as exc:
+        raise RuntimeError(f"Environment variable {name} must be an integer") from exc
+
+
+def _qdrant_client_from_env() -> QdrantClient:
+    kwargs = {
+        "url": os.environ["QDRANT_URL"],
+        "api_key": os.environ["QDRANT_API_KEY"],
+        "check_compatibility": False,
+    }
+    port = _optional_env_int("QDRANT_API_PORT")
+    if port is not None:
+        kwargs["port"] = port
+    return QdrantClient(**kwargs)
+
+
 def _clean(value) -> Optional[str]:
     if value is None:
         return None
@@ -115,9 +145,18 @@ class NaceDocument:
 
 def load_nace_rows() -> List[dict]:
     con = duckdb.connect(database=":memory:")
-    con.execute("INSTALL httpfs;")
-    con.execute("LOAD httpfs;")
-    table = con.execute(f"SELECT * FROM read_csv('{PATH_NACE}')").to_arrow_table()
+    _load_httpfs(con)
+    table = con.execute(
+        f"""
+        SELECT *
+        FROM read_csv(
+            '{PATH_NACE}',
+            delim='\t',
+            header=true,
+            all_varchar=true
+        )
+        """
+    ).to_arrow_table()
     return table.to_pylist()
 
 
@@ -127,12 +166,7 @@ def main() -> None:
         base_url=os.environ["LLMLAB_URL"],
         api_key=os.environ["LLMLAB_API_KEY"],
     )
-    client_qdrant = QdrantClient(
-        url=os.environ["QDRANT_URL"],
-        api_key=os.environ["QDRANT_API_KEY"],
-        port=os.environ["QDRANT_API_PORT"],
-        check_compatibility=False,
-    )
+    client_qdrant = _qdrant_client_from_env()
 
     # Q1: Create collection
     if client_qdrant.collection_exists(collection_name=COLLECTION_NAME):

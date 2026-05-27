@@ -7,6 +7,28 @@ from openai import OpenAI
 from qdrant_client import QdrantClient
 
 
+def _optional_env_int(name: str) -> int | None:
+    value = os.getenv(name, "").strip()
+    if not value:
+        return None
+    try:
+        return int(value)
+    except ValueError as exc:
+        raise RuntimeError(f"Environment variable {name} must be an integer") from exc
+
+
+def _qdrant_client_from_env() -> QdrantClient:
+    kwargs = {
+        "url": os.environ["QDRANT_URL"],
+        "api_key": os.environ["QDRANT_API_KEY"],
+        "check_compatibility": False,
+    }
+    port = _optional_env_int("QDRANT_API_PORT")
+    if port is not None:
+        kwargs["port"] = port
+    return QdrantClient(**kwargs)
+
+
 def main() -> None:
     load_dotenv(override=True)
 
@@ -15,7 +37,6 @@ def main() -> None:
         "LLMLAB_API_KEY",
         "QDRANT_URL",
         "QDRANT_API_KEY",
-        "QDRANT_API_PORT",
     ]
     missing = [k for k in required if not os.getenv(k)]
     if missing:
@@ -32,12 +53,7 @@ def main() -> None:
         print(f"- {model.id}")
 
     # Question 3: Qdrant client and list collections
-    client_qdrant = QdrantClient(
-        url=os.environ["QDRANT_URL"],
-        api_key=os.environ["QDRANT_API_KEY"],
-        port=os.environ["QDRANT_API_PORT"],
-        check_compatibility=False,
-    )
+    client_qdrant = _qdrant_client_from_env()
     collections = client_qdrant.get_collections()
     print("\nQdrant collections:")
     if not collections.collections:

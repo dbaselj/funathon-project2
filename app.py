@@ -2,10 +2,9 @@ import os
 from functools import lru_cache
 from typing import Optional
 
+import duckdb
 import mlflow
 import numpy as np
-import polars as pl
-import duckdb
 from dotenv import load_dotenv
 from flask import Flask, render_template_string, request
 from openai import OpenAI
@@ -18,7 +17,6 @@ load_dotenv(override=True)
 APP_TITLE = "Very NACE 2.1"
 EXPERIMENT_NAME = "funathon-2026-project2"
 DEFAULT_RUN_ID = "3fe714a946c149b589305ec153fdc36f"
-DATA_URL = "https://minio.lab.sspcloud.fr/projet-formation/diffusion/funathon/2026/project2/generation_None_temp08.parquet"
 NACE_TSV_URL = "https://minio.lab.sspcloud.fr/projet-formation/diffusion/funathon/2026/project2/NACE_Rev2.1_Structure_Explanatory_Notes_EN.tsv"
 
 RAG_COLLECTION_NAME = "nace-collection"
@@ -29,6 +27,7 @@ RAG_TEMPERATURE = 0.1
 DEFAULT_TOP_K = 5
 RAG_CACHE_SIZE = 256
 RAG_CONTEXT_MAX_CHARS = 700
+REQUIRED_RAG_ENV = ("LLMLAB_URL", "LLMLAB_API_KEY", "QDRANT_URL", "QDRANT_API_KEY")
 
 SYSTEM_PROMPT = """\
 You are an expert classifier for the NACE 2.1 nomenclature.
@@ -218,9 +217,9 @@ HTML = """
       let predictTimer = null;
       function schedulePredict() {
         if (!form || !textEl) return;
+        clearTimeout(predictTimer);
         const txt = (textEl.value || "").trim();
         if (txt.length < 3) return;
-        clearTimeout(predictTimer);
         predictTimer = setTimeout(() => form.requestSubmit(), 550);
       }
       if (textEl) textEl.addEventListener("input", schedulePredict);
@@ -231,8 +230,8 @@ HTML = """
         ragWrapEl.style.alignItems = "center";
       }
       syncModeUI();
-      if (modeEl) modeEl.addEventListener("change", () => { syncModeUI(); form.requestSubmit(); });
-      if (ragModelEl) ragModelEl.addEventListener("change", () => form.requestSubmit());
+      if (modeEl && form) modeEl.addEventListener("change", () => { syncModeUI(); form.requestSubmit(); });
+      if (ragModelEl && form) ragModelEl.addEventListener("change", () => form.requestSubmit());
 
       const canvas = document.getElementById("matrix");
       const ctx = canvas.getContext("2d");
@@ -243,7 +242,7 @@ HTML = """
         canvas.width = window.innerWidth;
         canvas.height = window.innerHeight;
         const cols = Math.floor(canvas.width / fontSize);
-        drops = Array(cols).fill(1 + Math.random() * -100);
+        drops = Array.from({ length: cols }, () => 1 + Math.random() * -100);
       }
       function drawMatrix() {
         ctx.fillStyle = "rgba(2, 8, 6, 0.14)";
@@ -303,14 +302,46 @@ HTML = """
 app = Flask(__name__)
 
 
+def _required_env(name: str) -> str:
+    value = os.getenv(name, "").strip()
+    if not value:
+        raise RuntimeError(f"Missing required environment variable: {name}")
+    return value
+
+
+def _optional_env_int(name: str) -> int | None:
+    value = os.getenv(name, "").strip()
+    if not value:
+        return None
+    try:
+        return int(value)
+    except ValueError as exc:
+        raise RuntimeError(f"Environment variable {name} must be an integer") from exc
+
+
+def _load_httpfs(con: duckdb.DuckDBPyConnection) -> None:
+    try:
+        con.execute("LOAD httpfs;")
+    except duckdb.Error:
+        con.execute("INSTALL httpfs;")
+        con.execute("LOAD httpfs;")
+
+
 @lru_cache(maxsize=1)
 def load_code_labels() -> dict[str, str]:
     # Use official NACE table so hierarchical codes (e.g., 77.1, 49.1) resolve.
     con = duckdb.connect(database=":memory:")
-    con.execute("INSTALL httpfs;")
-    con.execute("LOAD httpfs;")
+    _load_httpfs(con)
     rows = con.execute(
-        f"SELECT CODE, HEADING FROM read_csv('{NACE_TSV_URL}')"
+        f"""
+        SELECT CODE, HEADING
+        FROM read_csv(
+            '{NACE_TSV_URL}',
+            delim='\t',
+            header=true,
+            all_varchar=true
+        )
+        """
     ).fetchall()
     return {
         str(code).strip(): str(heading).strip()
@@ -336,7 +367,9 @@ def _latest_run_id() -> str:
 @lru_cache(maxsize=1)
 def load_supervised_model() -> tuple[torchTextClassifiers, str]:
     run_id = os.getenv("MODEL_RUN_ID", "").strip() or _latest_run_id()
-    local_dir = mlflow.artifacts.download_artifacts(artifact_uri=f"runs:/{run_id}/model_artifacts")
+    local_dir = mlflow.artifacts.download_artifacts(
+        artifact_uri=f"runs:/{run_id}/model_artifacts"
+    )
     model = torchTextClassifiers.load(local_dir)
     model.pytorch_model.eval()
     return model, run_id
@@ -344,16 +377,24 @@ def load_supervised_model() -> tuple[torchTextClassifiers, str]:
 
 @lru_cache(maxsize=1)
 def load_rag_clients() -> tuple[OpenAI, QdrantClient]:
-    llm = OpenAI(base_url=os.environ["LLMLAB_URL"], api_key=os.environ["LLMLAB_API_KEY"])
-    qdrant = QdrantClient(
-        url=os.environ["QDRANT_URL"],
-        api_key=os.environ["QDRANT_API_KEY"],
-        port=os.environ["QDRANT_API_PORT"],
-        check_compatibility=False,
+    missing = [name for name in REQUIRED_RAG_ENV if not os.getenv(name, "").strip()]
+    if missing:
+        raise RuntimeError("Missing required RAG environment variables: " + ", ".join(missing))
+
+    llm = OpenAI(
+        base_url=_required_env("LLMLAB_URL"),
+        api_key=_required_env("LLMLAB_API_KEY"),
     )
+    qdrant_kwargs = {
+        "url": _required_env("QDRANT_URL"),
+        "api_key": _required_env("QDRANT_API_KEY"),
+        "check_compatibility": False,
+    }
+    port = _optional_env_int("QDRANT_API_PORT")
+    if port is not None:
+        qdrant_kwargs["port"] = port
+    qdrant = QdrantClient(**qdrant_kwargs)
     return llm, qdrant
-
-
 
 
 def _compact_retrieved_text(text: str, max_chars: int = RAG_CONTEXT_MAX_CHARS) -> str:
@@ -366,19 +407,23 @@ def predict_supervised(text: str, top_k: int, code_labels: dict[str, str]) -> tu
     results = model.predict(np.array([text]), top_k=top_k)
     codes = results["prediction"][0]
     confs = results["confidence"][0]
+    if len(codes) == 0:
+        raise RuntimeError("Supervised model returned no predictions")
+
+    best_code = str(codes[0])
     decision = {
-        "code": codes[0],
-        "label": code_labels.get(codes[0], "(label not found)"),
+        "code": best_code,
+        "label": code_labels.get(best_code, "(label not found)"),
         "confidence": f"{float(confs[0]):.3f}",
     }
     rows = [
         {
             "rank": i + 1,
-            "code": codes[i],
-            "label": code_labels.get(codes[i], "(label not found)"),
+            "code": str(codes[i]),
+            "label": code_labels.get(str(codes[i]), "(label not found)"),
             "confidence": f"{float(confs[i]):.3f}",
         }
-        for i in range(top_k)
+        for i in range(min(top_k, len(codes)))
     ]
     return decision, rows
 
@@ -395,6 +440,17 @@ def _predict_rag_cached(text: str, top_k: int, rag_model: str) -> tuple[dict, li
     )
 
     retrieved = points.model_dump()["points"]
+    if not retrieved:
+        return (
+            {
+                "code": None,
+                "label": "Not codable",
+                "codable": False,
+                "confidence": "0.000",
+            },
+            [],
+        )
+
     codes_retrieved = [p["payload"]["code"] for p in retrieved]
     desc_retrieved = [_compact_retrieved_text(p["payload"]["text"]) for p in retrieved]
 
@@ -414,12 +470,14 @@ def _predict_rag_cached(text: str, top_k: int, rag_model: str) -> tuple[dict, li
     )
     parsed: NaceClassificationResult = response.choices[0].message.parsed
 
-    chosen = parsed.nace_code
+    chosen = parsed.nace_code.strip() if parsed.nace_code else None
     decision_conf = float(parsed.confidence)
 
-    # Fallback: if LLM returns null, use top retrieved candidate for consistent behavior.
-    if not chosen and retrieved:
-        chosen = retrieved[0]["payload"]["code"]
+    if not parsed.codable:
+        chosen = None
+    elif chosen not in codes_retrieved:
+        # The prompt forbids invented codes; fall back to the closest retrieved code.
+        chosen = codes_retrieved[0]
         decision_conf = float(retrieved[0].get("score", 0.0))
 
     decision = {
@@ -440,7 +498,7 @@ def _predict_rag_cached(text: str, top_k: int, rag_model: str) -> tuple[dict, li
             }
         )
 
-    rank = 2
+    rank = 2 if chosen else 1
     for p in retrieved:
         code = p["payload"]["code"]
         if chosen and code == chosen:
@@ -464,7 +522,9 @@ def predict_rag(text: str, top_k: int, code_labels: dict[str, str], rag_model: s
     decision, rows = _predict_rag_cached(text.strip(), top_k, rag_model)
     decision = {
         **decision,
-        "label": code_labels.get(decision["code"], "Not codable") if decision["code"] else "Not codable",
+        "label": code_labels.get(decision["code"], "(label not found)")
+        if decision["code"]
+        else "Not codable",
     }
     mapped_rows = [
         {
@@ -488,25 +548,6 @@ def home():
     mode = "rag"
     rag_model = RAG_GEN_MODEL_NAME
 
-    try:
-        code_labels = load_code_labels()
-        # Preload supervised model to fail fast on startup issues.
-        load_supervised_model()
-    except Exception as exc:
-        return render_template_string(
-            HTML,
-            title=APP_TITLE,
-            text=text,
-            top_k=top_k,
-            mode=mode,
-            predictions=predictions,
-            rag_decision=rag_decision,
-            sup_decision=sup_decision,
-            rag_model=rag_model,
-            rag_model_options=RAG_GEN_MODEL_OPTIONS,
-            error=str(exc),
-        )
-
     if request.method == "POST":
         text = (request.form.get("text") or "").strip()
         mode = (request.form.get("mode") or "rag").strip().lower()
@@ -522,13 +563,19 @@ def home():
         top_k = max(1, min(10, top_k))
 
         if text:
+            code_labels = {}
+            try:
+                code_labels = load_code_labels()
+            except Exception as exc:
+                error = f"Could not load NACE labels: {exc}"
+
             try:
                 if mode == "rag":
                     rag_decision, predictions = predict_rag(text, top_k, code_labels, rag_model)
                 else:
                     sup_decision, predictions = predict_supervised(text, top_k, code_labels)
             except Exception as exc:
-                error = str(exc)
+                error = f"{error}; prediction failed: {exc}" if error else str(exc)
         else:
             error = "Please enter some text."
 
