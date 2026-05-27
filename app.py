@@ -134,16 +134,14 @@ HTML = """
 
             {% if mode == 'rag' and rag_decision %}
               <div class="decision ok">
-                <div><strong>Final Decision:</strong> {{ rag_decision.code if rag_decision.code else 'Not codable' }}</div>
-                <div>{{ rag_decision.label }}</div>
-                <div>Confidence: {{ rag_decision.confidence }}</div>
+                <div style="font-size:1.35rem; font-weight:700; margin-bottom:.25rem;">{{ rag_decision.label }}</div>
+                <div style="font-size:.82rem; color:var(--ink-dim);">{{ rag_decision.code if rag_decision.code else 'Not codable' }} &nbsp;·&nbsp; Confidence: {{ rag_decision.confidence }}</div>
               </div>
               <h3 class="mode-tag" style="margin:0 0 .35rem 0; font-size:.9rem;">Alternatives</h3>
             {% elif mode == 'supervised' and sup_decision %}
               <div class="decision ok">
-                <div><strong>Final Decision:</strong> {{ sup_decision.code }}</div>
-                <div>{{ sup_decision.label }}</div>
-                <div>Confidence: {{ sup_decision.confidence }}</div>
+                <div style="font-size:1.35rem; font-weight:700; margin-bottom:.25rem;">{{ sup_decision.label }}</div>
+                <div style="font-size:.82rem; color:var(--ink-dim);">{{ sup_decision.code }} &nbsp;·&nbsp; Confidence: {{ sup_decision.confidence }}</div>
               </div>
               <h3 class="mode-tag" style="margin:0 0 .35rem 0; font-size:.9rem;">Alternatives</h3>
             {% endif %}
