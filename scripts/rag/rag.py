@@ -43,6 +43,7 @@ SAMPLE_SIZE = 100
 
 SYSTEM_PROMPT = """\
 You are an expert classifier for the NACE 2.1 nomenclature (Statistical Classification of Economic Activities in the European Community).
+The activity description may be written in English or Slovene; understand both languages and map the meaning to the correct NACE code.
 Given a company activity description and a short list of candidate NACE codes, your job is to pick the single most appropriate code from the candidates — or to declare the activity not codable if the description is too ambiguous.
 Always reply with a valid JSON object matching the requested schema. No explanations, no extra text.
 """
@@ -55,6 +56,7 @@ USER_PROMPT_TEMPLATE = """\
 {proposed_nace_descriptions}
 
 ## Rules
+- The activity text may be in English or Slovene. Interpret it in the original language and choose the best NACE code.
 - Pick exactly one code from this list: [{proposed_nace_codes}]. Do not invent codes outside the list.
 - If several activities are mentioned, only consider the first one.
 - If the description is too vague to decide, return `nace_code: null` and `codable: false`.
