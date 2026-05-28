@@ -298,14 +298,18 @@ def main() -> None:
     )
     print(f"Collection created: {COLLECTION_NAME}")
 
-    sample_docs = [NaceDocument.from_raw(row) for row in nace[:10]]
+    # Only embed level-4 codes (leaf classes like 01.11) — higher levels dilute retrieval
+    nace_level4 = [row for row in nace if int(row["LEVEL"]) == 4]
+    print(f"Level 4 docs (leaf classes): {len(nace_level4)}")
+
+    sample_docs = [NaceDocument.from_raw(row) for row in nace_level4[:10]]
     for doc in sample_docs:
         doc.get_embeddings(client_llm, EMB_MODEL_NAME)
     print("Sample embedding length:", len(sample_docs[0].vector or []))
     print("Sample first 8 values:", (sample_docs[0].vector or [])[:8])
 
     nace_points: List[PointStruct] = []
-    for raw in tqdm(nace, desc="Embedding NACE docs", unit="doc"):
+    for raw in tqdm(nace_level4, desc="Embedding NACE docs", unit="doc"):
         doc = NaceDocument.from_raw(raw)
         doc.get_embeddings(client_llm, EMB_MODEL_NAME)
         nace_points.append(doc.to_qdrant_point())
