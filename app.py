@@ -130,7 +130,7 @@ HTML = """
             <label for="csv_file" style="display:block; margin-top:.9rem;">CSV Upload</label>
             <input id="csv_file" name="csv_file" type="file" accept=".csv,text/csv" />
             <div style="font-size:.82rem; color:var(--ink-dim); margin-top:.4rem; font-family:'IBM Plex Mono',monospace;">
-              Expected columns: id, activity_description. Comma or semicolon separated.
+              Expected column: activity_description (optional: id). Comma or semicolon separated. If no id column, row numbers are used.
             </div>
             <div class="controls">
               <label for="mode">Engine</label>
@@ -190,8 +190,8 @@ HTML = """
             {% if batch_job_id %}
               <div class="decision ok" id="batch-progress" data-job-id="{{ batch_job_id }}" data-total="{{ batch_total_rows }}">
                 <div id="batch-status-line">Processing {{ batch_total_rows }} rows...</div>
-                <div style="font-size:.82rem; color:var(--ink-dim);">The full CSV will be downloadable when processing completes.</div>
-                <div class="loading-track" aria-hidden="true"><div class="loading-bar"></div></div>
+                <div id="batch-info-text" style="font-size:.82rem; color:var(--ink-dim);">The full CSV will be downloadable when processing completes.</div>
+                <div id="batch-loading-track" class="loading-track" aria-hidden="true"><div class="loading-bar"></div></div>
               </div>
               <div id="export-area" style="margin-top:0; margin-bottom:.8rem;">
                 <a id="export-link" class="action-btn export-btn" style="display:inline-block; text-align:center; text-decoration:none; padding:.64rem 1rem; pointer-events:none; opacity:.45; cursor:not-allowed;">Export CSV</a>
@@ -200,6 +200,7 @@ HTML = """
                 <thead><tr><th>ID</th><th>Activity Description</th><th>NACE Code</th><th>Label</th><th>Confidence</th></tr></thead>
                 <tbody id="batch-results-body"></tbody>
               </table>
+              <div id="batch-preview-note" style="font-size:.78rem; color:var(--ink-dim); font-family:'IBM Plex Mono',monospace; margin-top:.5rem;"></div>
             {% else %}
               <div style="margin-top:0; margin-bottom:.8rem;">
                 <a href="data:text/csv;charset=utf-8;base64,{{ batch_csv_b64 }}" download="classification.csv" class="action-btn export-btn" style="display:inline-block; text-align:center; text-decoration:none; padding:.64rem 1rem;">Export CSV</a>
@@ -305,6 +306,7 @@ HTML = """
         const jobId = batchProgress.dataset.jobId;
         const statusLine = document.getElementById("batch-status-line");
         const exportLink = document.getElementById("export-link");
+        const BASE = window.location.href.replace(/[^/]*$/, "");
 
         function renderRows(rows) {
           if (!batchResultsBody) return;
@@ -322,7 +324,7 @@ HTML = """
 
         async function pollJob() {
           try {
-            const response = await fetch(`/batch-status/${jobId}`);
+            const response = await fetch(`${BASE}batch-status/${jobId}`);
             const contentType = response.headers.get("content-type") || "";
             const raw = await response.text();
             let data = null;
@@ -339,13 +341,24 @@ HTML = """
             }
             if (data.preview_rows) renderRows(data.preview_rows);
             if (data.status === "done") {
+              const loadingTrack = document.getElementById("batch-loading-track");
+              if (loadingTrack) loadingTrack.style.display = "none";
+              const infoText = document.getElementById("batch-info-text");
+              if (infoText) infoText.textContent = "Download started automatically.";
+              const previewNote = document.getElementById("batch-preview-note");
+              if (previewNote) {
+                const shown = data.preview_rows ? data.preview_rows.length : 0;
+                previewNote.textContent = shown < data.total
+                  ? `Preview: first ${shown} of ${data.total} rows. Download the CSV for all results.`
+                  : `All ${data.total} rows shown.`;
+              }
               if (exportLink) {
-                exportLink.href = `/batch-export/${jobId}`;
+                exportLink.href = `${BASE}batch-export/${jobId}`;
                 exportLink.style.pointerEvents = "";
                 exportLink.style.opacity = "";
                 exportLink.style.cursor = "";
               }
-              window.location.href = `/batch-export/${jobId}`;
+              window.location.href = `${BASE}batch-export/${jobId}`;
               return;
             }
             if (data.status === "error") return;
@@ -560,7 +573,6 @@ def _parse_activity_csv(upload) -> list[dict[str, str]]:
         if text.count(";") > text.count(","):
             delimiter = ";"
 
-    required_columns = {"id", "activity_description"}
     parsed_rows = [
         row
         for row in csv.reader(io.StringIO(text), delimiter=delimiter)
@@ -571,33 +583,38 @@ def _parse_activity_csv(upload) -> list[dict[str, str]]:
 
     first_row = [cell.strip() for cell in parsed_rows[0]]
     header_map = {name.lower(): index for index, name in enumerate(first_row) if name}
-    has_header = required_columns.issubset(header_map)
+    has_description_col = "activity_description" in header_map
 
     rows: list[dict[str, str]] = []
-    if has_header:
-        id_index = header_map["id"]
+    seq = 0
+    if has_description_col:
         description_index = header_map["activity_description"]
-        for index, row in enumerate(parsed_rows[1:], start=2):
-            if len(row) <= max(id_index, description_index):
-                raise RuntimeError(f"Row {index} is missing activity_description.")
-            row_id = row[id_index].strip()
+        for row in parsed_rows[1:]:
+            if len(row) <= description_index:
+                continue
             activity_description = row[description_index].strip()
             if not activity_description:
-                raise RuntimeError(f"Row {index} is missing activity_description.")
-            rows.append({"id": row_id, "activity_description": activity_description})
-    else:
-        if len(parsed_rows[0]) < 2:
-            raise RuntimeError(
-                "CSV must contain a header row or two columns: id and activity_description."
-            )
-        for index, row in enumerate(parsed_rows, start=1):
+                continue
+            seq += 1
+            rows.append({"id": str(seq), "activity_description": activity_description})
+    elif len(first_row) >= 2:
+        # No recognised header — treat col 1 as description, col 0 ignored
+        for row in parsed_rows:
             if len(row) < 2:
-                raise RuntimeError(f"Row {index} is missing activity_description.")
-            row_id = row[0].strip()
+                continue
             activity_description = row[1].strip()
             if not activity_description:
-                raise RuntimeError(f"Row {index} is missing activity_description.")
-            rows.append({"id": row_id, "activity_description": activity_description})
+                continue
+            seq += 1
+            rows.append({"id": str(seq), "activity_description": activity_description})
+    else:
+        # Single column: all descriptions
+        for row in parsed_rows:
+            activity_description = row[0].strip() if row else ""
+            if not activity_description:
+                continue
+            seq += 1
+            rows.append({"id": str(seq), "activity_description": activity_description})
 
     if not rows:
         raise RuntimeError("CSV did not contain any data rows.")
